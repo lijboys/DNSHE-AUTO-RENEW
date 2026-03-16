@@ -23,6 +23,7 @@ jobs:
 
       - name: 运行批量续期脚本
         env:
+          ACCOUNTS_CONFIG: ${{ secrets.ACCOUNTS_CONFIG }}
           # 💡 这里读取 GitHub Secrets 并传给 Python 脚本
           # DNSHE 基础密钥 (必填)
           API_KEY: ${{ secrets.API_KEY }}
