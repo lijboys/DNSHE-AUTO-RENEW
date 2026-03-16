@@ -23,13 +23,12 @@
 
 Fork 或将本项目上传到你自己的 GitHub 仓库后，进入仓库的 **Settings -> Secrets and variables -> Actions**，点击 **New repository secret**，添加以下环境变量：
 
-| 变量名 | 说明 | 是否必填 |
-| :--- | :--- | :--- |
-| `API_KEY` | DNSHE 的 API Key（以 `cfsd_` 开头） | **必填** |
-| `API_SECRET` | DNSHE 的 API Secret（仅创建时显示一次） | **必填** |
-| `TG_BOT_TOKEN` | Telegram 机器人的 Token | 选填 |
-| `TG_CHAT_ID` | 接收通知的 TG 账号或群组 ID | 选填 |
-| `WX_PUSH_URL` | 你的 CF 网页版通知 Worker 完整直链，需包含密码 | 选填 |
+| 变量名 / Secret 名 | 说明 | 格式示例 | 是否必填 |
+| :--- | :--- | :--- | :--- |
+| `ACCOUNTS_CONFIG` | 多账号配置，**一行一个账号**，用英文逗号隔开 | `key1,secret1`<br>`key2,secret2` | **必填** |
+| `WX_PUSH_URL` | 你的微信推送直链（需带鉴权密码） | `https://xx.workers.dev/密码` | 选填 |
+| `TG_BOT_TOKEN` | Telegram 机器人的 Token | `123456:ABC-DEF1234...` | 选填 |
+| `TG_CHAT_ID` | 接收通知的 TG 账号或群组 ID | `123456789` | 选填 |
 
 > **提示**：如果不需要某一种通知方式，直接不填对应的 Secret 即可，脚本会自动跳过。
 
