@@ -1,6 +1,6 @@
 /**
- * DNSHE 免费域名批量续期助手 (融合了你的极简网页渲染版)
- * 变量需求: ACCOUNTS_CONFIG, WX_API_URL, WX_AUTH_KEY, MY_URL, (选填 TG_BOT_TOKEN, TG_CHAT_ID)
+ * DNSHE 免费域名批量续期助手 (纯净配置版)
+ * 变量需求: ACCOUNTS_CONFIG, WX_API_URL, WX_AUTH_KEY, (选填 MY_URL, TG_BOT_TOKEN, TG_CHAT_ID)
  */
 
 export default {
@@ -13,7 +13,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     
-    // 💡 路由 1：专门负责渲染好看的详情页
+    // 💡 路由 1：专门负责渲染好看的详情页 (只有配置了 MY_URL 才会用到)
     if (url.pathname === '/detail') {
       const title = url.searchParams.get('title') || '续期详情';
       const content = url.searchParams.get('content') || '暂无内容';
@@ -53,7 +53,7 @@ export default {
     
     // 💡 路由 2：防误触的专属手动执行接口
     if (url.pathname === '/run') {
-      const myUrl = env.MY_URL || url.origin; // 优先用变量，没有的话自动抓当前域名
+      const myUrl = env.MY_URL; // 🚫 彻底去掉了自动抓取！只有你在变量里老老实实配了 MY_URL，才会生成网页！
       const resultText = await runAutoRenew(env, myUrl);
       return new Response(`手动触发完成！\n\n${resultText}`, { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
@@ -125,7 +125,8 @@ async function runAutoRenew(env, myUrl) {
             if (msg.includes("尚未进入") || msg.includes("时间窗口")) {
               totalSkip++;
               reportLines.push(`⏭️ ${fullDomain} (未到时间)`);
-            } else if (msg.includes("永久") || msg === "未知报错") {
+            } else if (msg.includes("永久") || msg.includes("never expire") || msg === "未知报错") {
+              // 修正了 never expire 的判断逻辑，现在会被正确归类为跳过/永久有效
               totalSkip++;
               reportLines.push(`♾️ ${fullDomain} (永久有效)`);
             } else {
@@ -157,7 +158,8 @@ async function runAutoRenew(env, myUrl) {
 
   // ================= 发送 TG 通知 =================
   if (tgToken && tgChatId) {
-    const tgMsg = `<b>${title}</b>\n\n<pre>${finalMessage}</pre>`;
+    // 移除了包裹 finalMessage 的 <pre> 标签，恢复普通文本格式
+    const tgMsg = `<b>${title}</b>\n\n${finalMessage}`;
     await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -168,22 +170,23 @@ async function runAutoRenew(env, myUrl) {
   // ================= 发送微信通知 =================
   if (wxApiUrl && wxAuthKey) {
     try {
-      let clickUrl = "https://my.dnshe.com/";
+      // 默认基础负载，不传 URL
+      let pushPayload = {
+        key: wxAuthKey,
+        title: title,
+        content: finalMessage
+      };
+
+      // 💡 只有当你确实配置了 MY_URL 环境变量时，才会传 url 过去替换掉你的默认跳转
       if (myUrl) {
         const cleanMyUrl = myUrl.replace(/\/$/, '');
-        // 💡 这里完美复刻了你的骚操作，生成详情页直链
-        clickUrl = `${cleanMyUrl}/detail?title=${encodeURIComponent(title)}&content=${encodeURIComponent(finalMessage)}`;
+        pushPayload.url = `${cleanMyUrl}/detail?title=${encodeURIComponent(title)}&content=${encodeURIComponent(finalMessage)}`;
       }
 
       await fetch(wxApiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          key: wxAuthKey,
-          title: title,
-          content: finalMessage,
-          url: clickUrl
-        })
+        body: JSON.stringify(pushPayload)
       });
     } catch (err) {
       console.log("微信发送失败:", err);
