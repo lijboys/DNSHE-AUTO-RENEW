@@ -1,58 +1,98 @@
+/**
+ * DNSHE 免费域名批量续期助手 (融合了你的极简网页渲染版)
+ * 变量需求: ACCOUNTS_CONFIG, WX_API_URL, WX_AUTH_KEY, MY_URL, (选填 TG_BOT_TOKEN, TG_CHAT_ID)
+ */
+
 export default {
-  // ==========================================
-  // [上下文] 浏览器访问触发：方便你随时输入 Worker 网址手动跑一次测试
-  // ==========================================
-  async fetch(request, env, ctx) {
-    const resultText = await runAutoRenew(env);
-    return new Response(resultText, {
-      headers: { "Content-Type": "text/plain;charset=UTF-8" }
-    });
+  // ================= 定时任务入口 =================
+  async scheduled(event, env, ctx) {
+    await runAutoRenew(env, env.MY_URL);
   },
 
-  // ==========================================
-  // [上下文] 定时任务触发：配合 CF 后台的 Cron 触发器自动运行
-  // ==========================================
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(runAutoRenew(env));
+  // ================= 浏览器路由入口 =================
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    
+    // 💡 路由 1：专门负责渲染好看的详情页
+    if (url.pathname === '/detail') {
+      const title = url.searchParams.get('title') || '续期详情';
+      const content = url.searchParams.get('content') || '暂无内容';
+      
+      const html = `
+        <!DOCTYPE html>
+        <html lang="zh-CN">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+          <title>${title}</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f5f7; color: #333; margin: 0; padding: 20px; line-height: 1.6; }
+            .container { max-width: 600px; margin: 0 auto; }
+            .card { background: #ffffff; border-radius: 16px; padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); }
+            .header { border-bottom: 1px solid #eee; padding-bottom: 16px; margin-bottom: 16px; }
+            h2 { margin: 0; font-size: 20px; color: #173177; font-weight: 600; }
+            pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; margin: 0; font-size: 15px; color: #444; }
+            .footer { margin-top: 24px; text-align: center; font-size: 12px; color: #999; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="card">
+              <div class="header">
+                <h2>${title}</h2>
+              </div>
+              <pre>${content}</pre>
+            </div>
+            <div class="footer">🚀 Powered by Cloudflare Workers</div>
+          </div>
+        </body>
+        </html>
+      `;
+      return new Response(html, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
+    
+    // 💡 路由 2：防误触的专属手动执行接口
+    if (url.pathname === '/run') {
+      const myUrl = env.MY_URL || url.origin; // 优先用变量，没有的话自动抓当前域名
+      const resultText = await runAutoRenew(env, myUrl);
+      return new Response(`手动触发完成！\n\n${resultText}`, { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    }
+    
+    // 💡 路由 3：默认首页，防止外人乱点
+    return new Response("🤖 DNSHE 续期 Worker 运行正常 🟢\n\n手动测试运行请访问: /run", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   }
 };
 
-// 核心执行逻辑
-async function runAutoRenew(env) {
-  // 💡 读取你在 CF 后台填写的明文变量
+// ================= 核心业务逻辑 =================
+async function runAutoRenew(env, myUrl) {
   const configStr = env.ACCOUNTS_CONFIG || "";
+  const wxApiUrl = env.WX_API_URL;
+  const wxAuthKey = env.WX_AUTH_KEY;
   const tgToken = env.TG_BOT_TOKEN;
   const tgChatId = env.TG_CHAT_ID;
-  const wxPushUrl = env.WX_PUSH_URL;
 
   const BASE_URL = "https://api005.dnshe.com/index.php?m=domain_hub";
 
-  // 解析账号配置 (按行分割，逗号隔开)
   let accounts = [];
-  const lines = configStr.split('\n');
-  for (let line of lines) {
-    line = line.trim();
-    if (!line || line.startsWith('#')) continue;
-    const parts = line.split(',');
-    if (parts.length >= 2) {
-      accounts.push({ key: parts[0].trim(), secret: parts[1].trim() });
+  if (configStr) {
+    for (let line of configStr.split('\n')) {
+      line = line.trim();
+      if (!line || line.startsWith('#')) continue;
+      const parts = line.split(',');
+      if (parts.length >= 2) accounts.push({ key: parts[0].trim(), secret: parts[1].trim() });
     }
   }
 
-  if (accounts.length === 0) {
-    return "❌ 找不到任何账号配置！请在 CF 设置 -> 变量 中添加 ACCOUNTS_CONFIG。";
-  }
+  if (accounts.length === 0) return "❌ 找不到账号配置，请检查变量 ACCOUNTS_CONFIG";
 
   let totalSuccess = 0, totalSkip = 0, totalFail = 0;
-  let summaryLines = [`<b>🤖 域名批量续期结果 (共${accounts.length}个账号)</b>\n`];
+  let reportLines = [];
 
-  // 遍历每个账号
   for (let idx = 0; idx < accounts.length; idx++) {
     const acc = accounts[idx];
-    summaryLines.push(`<b>--- 📦 账号 ${idx + 1} ---</b>`);
+    reportLines.push(`📦 账号 [${idx + 1}]`);
     
     try {
-      // 获取当前账号的域名列表
       const listReq = await fetch(`${BASE_URL}&endpoint=subdomains&action=list`, {
         headers: { "X-API-Key": acc.key, "X-API-Secret": acc.secret }
       });
@@ -60,79 +100,94 @@ async function runAutoRenew(env) {
       const domains = listRes.subdomains || [];
 
       if (domains.length === 0) {
-        summaryLines.push("⚠️ 该账号下未找到域名\n");
+        reportLines.push("  ⚠️ 暂无活跃域名\n");
         continue;
       }
 
-      // 遍历当前账号下的域名进行续期
       for (let d of domains) {
         const fullDomain = d.full_domain;
         const subId = d.id;
-        
         try {
           const renewReq = await fetch(`${BASE_URL}&endpoint=subdomains&action=renew`, {
             method: "POST",
-            headers: {
-              "X-API-Key": acc.key,
-              "X-API-Secret": acc.secret,
-              "Content-Type": "application/json"
-            },
+            headers: { "X-API-Key": acc.key, "X-API-Secret": acc.secret, "Content-Type": "application/json" },
             body: JSON.stringify({ subdomain_id: subId })
           });
-          
           const renewRes = await renewReq.json();
           
           if (renewRes.success) {
             totalSuccess++;
-            const days = renewRes.remaining_days || "未知";
-            const newDate = (renewRes.new_expires_at || "未知").substring(0, 10);
-            summaryLines.push(`✅ <b>${fullDomain}</b>\n└ 剩余: ${days}天 | 到期: ${newDate}`);
+            const days = renewRes.remaining_days || "?";
+            const newDate = (renewRes.new_expires_at || "?").substring(0, 10);
+            reportLines.push(`✅ ${fullDomain} (剩余:${days}天)`);
           } else {
             const msg = renewRes.message || renewRes.error || "未知报错";
             if (msg.includes("尚未进入") || msg.includes("时间窗口")) {
               totalSkip++;
-              summaryLines.push(`⏭️ <b>${fullDomain}</b>\n└ 状态: 还没到续期时间`);
+              reportLines.push(`⏭️ ${fullDomain} (未到时间)`);
             } else if (msg.includes("永久") || msg === "未知报错") {
               totalSkip++;
-              const reason = msg === "未知报错" ? "永久域名无需处理" : msg;
-              summaryLines.push(`♾️ <b>${fullDomain}</b>\n└ 状态: ${reason}`);
+              reportLines.push(`♾️ ${fullDomain} (永久有效)`);
             } else {
               totalFail++;
-              summaryLines.push(`❌ <b>${fullDomain}</b>\n└ 失败: ${msg}`);
+              reportLines.push(`❌ ${fullDomain} (失败:${msg})`);
             }
           }
         } catch (e) {
           totalFail++;
-          summaryLines.push(`❌ <b>${fullDomain}</b>\n└ 续期请求异常: ${e.message}`);
+          reportLines.push(`❌ ${fullDomain} (请求超时)`);
         }
       }
     } catch (e) {
-      summaryLines.push(`❌ 获取账号 ${idx + 1} 的域名列表失败: ${e.message}`);
+      reportLines.push(`❌ 账号 ${idx + 1} 列表获取失败`);
     }
-    summaryLines.push(""); // 账号之间空一行
+    reportLines.push(""); 
   }
 
-  // 组装最终推送文本
-  summaryLines.splice(1, 0, `总计成功: ${totalSuccess} | 跳过: ${totalSkip} | 失败: ${totalFail}\n`);
-  const finalMessage = summaryLines.join('\n');
+  const nowStr = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  const title = `🌐 DNSHE 续期: 成功 ${totalSuccess} 个`;
+  const finalMessage = [
+    `🕒 执行时间: ${nowStr}`,
+    `------------------------------`,
+    `📊 成功: ${totalSuccess} | 跳过: ${totalSkip} | 失败: ${totalFail}`,
+    `------------------------------`,
+    ...reportLines,
+    `💡 你的域名正在被安全守护中`
+  ].join("\n");
 
-  // 发送 TG 通知
+  // ================= 发送 TG 通知 =================
   if (tgToken && tgChatId) {
+    const tgMsg = `<b>${title}</b>\n\n<pre>${finalMessage}</pre>`;
     await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: tgChatId, text: finalMessage, parse_mode: "HTML" })
-    }).catch(() => {}); // 忽略推送错误
+      body: JSON.stringify({ chat_id: tgChatId, text: tgMsg, parse_mode: "HTML" })
+    }).catch(() => {});
   }
 
-  // 发送微信通知 (去除 HTML 标签)
-  if (wxPushUrl) {
-    const wxText = finalMessage.replace(/<b>/g, "").replace(/<\/b>/g, "");
-    await fetch(wxPushUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: "🌐 DNSHE 多账号续期通知", body: wxText })
-    }).catch(() => {}); 
+  // ================= 发送微信通知 =================
+  if (wxApiUrl && wxAuthKey) {
+    try {
+      let clickUrl = "https://my.dnshe.com/";
+      if (myUrl) {
+        const cleanMyUrl = myUrl.replace(/\/$/, '');
+        // 💡 这里完美复刻了你的骚操作，生成详情页直链
+        clickUrl = `${cleanMyUrl}/detail?title=${encodeURIComponent(title)}&content=${encodeURIComponent(finalMessage)}`;
+      }
+
+      await fetch(wxApiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          key: wxAuthKey,
+          title: title,
+          content: finalMessage,
+          url: clickUrl
+        })
+      });
+    } catch (err) {
+      console.log("微信发送失败:", err);
+    }
   }
 
   return finalMessage;
